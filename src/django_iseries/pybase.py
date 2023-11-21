@@ -89,9 +89,7 @@ class DatabaseWrapper:
             kwargs['dsn'] += "SSLSERVERCERTIFICATE=%s;" % (kwargs.get('sslservercertificate'))
             del kwargs['sslservercertificate']
 
-        autocommit = kwargs.get('autocommit', False)
-
-        conn_options = {'autocommit': autocommit}
+        conn_options = {'autocommit': False}
         kwargs['conn_options'] = conn_options
         if 'options' in kwargs:
             kwargs.update(kwargs.get('options'))
