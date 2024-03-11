@@ -29,6 +29,7 @@ from django.db import models
 from django.db.backends.utils import truncate_name
 from django.db.models.fields.related import ManyToManyField
 from django import VERSION as djangoVersion
+from django.conf import settings
 from . import Database
 
 Error = Database.Error
@@ -580,6 +581,9 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
             self._restore_constraints_check(deferred_constraints, rel_old_field, rel_new_field, new_field.rel.through)
 
     def _reorg_tables(self):
+        if getattr(settings, 'DJANGO_ISERIES_SKIP_TABLE_REORG', False):
+            return
+
         checkReorgSQL = "select tabschema, tabname from sysibmadm.admintabinfo where reorg_pending = 'Y'"
         res = []
         reorgSQLs = []
