@@ -56,6 +56,11 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
     def prepare_default(self, value):
         return self.quote_value(value)
 
+    def _create_index_name(self, table_name, column_names, suffix=""):
+        index_name = super()._create_index_name(table_name, column_names, suffix=suffix)
+        index_name = index_name.replace('.', '_')
+        return index_name
+
     def alter_field(self, model, old_field, new_field, strict=False):
         alter_field_data_type = False
         alter_field_nullable = False
