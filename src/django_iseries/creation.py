@@ -65,10 +65,10 @@ class DatabaseCreation(BaseDatabaseCreation):
     }
 
     data_type_check_constraints = {
-        'BooleanField': '%(db_column)s IN (0,1)',
-        'NullBooleanField': '(%(db_column)s IN (0,1)) OR (%(db_column)s IS NULL)',
-        'PositiveIntegerField': '%(db_column)s >= 0',
-        'PositiveSmallIntegerField': '%(db_column)s >= 0',
+        'BooleanField': '%(column)s IN (0,1)',
+        'NullBooleanField': '(%(column)s IN (0,1)) OR (%(db_column)s IS NULL)',
+        'PositiveIntegerField': '%(column)s >= 0',
+        'PositiveSmallIntegerField': '%(column)s >= 0',
     }
 
     def sql_indexes_for_field(self, model, f, style):
