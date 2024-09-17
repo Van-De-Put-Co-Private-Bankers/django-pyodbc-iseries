@@ -48,7 +48,7 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
     sql_drop_pk = "ALTER TABLE %(table)s DROP PRIMARY KEY"
     sql_drop_default = "ALTER TABLE %(table)s ALTER COLUMN %(column)s DROP DEFAULT"
     sql_rename_column = (
-        "ALTER TABLE %(table)s ADD COLUMN %(new_column)s %(type)s; UPDATE %(table)s SET %(new_column)s = %(old_column)s; ALTER TABLE %(table)s DROP COLUMN %(old_column)s"
+        "ALTER TABLE %(table)s ADD COLUMN %(new_column)s %(new_type)s; UPDATE %(table)s SET %(new_column)s = %(old_column)s; ALTER TABLE %(table)s DROP COLUMN %(old_column)s"
     )
 
     @property
@@ -246,6 +246,7 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
                         'table': self.quote_name(model._meta.db_table),
                         'old_column': self.quote_name(old_field.column),
                         'new_column': self.quote_name(new_field.column),
+                        'new_type': new_db_field['type'],
                     }
                 )
 
