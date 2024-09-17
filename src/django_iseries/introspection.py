@@ -122,8 +122,13 @@ class DatabaseIntrospection(BaseDatabaseIntrospection):
     def get_constraints(self, cursor, table_name):
         constraints = {}
         schema = None
-        sql = "SELECT TYPE FROM QSYS2.SYSTABLES WHERE TABLE_SCHEMA=CURRENT_SCHEMA AND TABLE_NAME=?"
-        cursor.execute(sql, [table_name.upper()])
+        if '.' in table_name:
+            current_schema, table_name = table_name.upper().rsplit('.', 1)
+            sql = "SELECT TYPE FROM QSYS2.SYSTABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?"
+            cursor.execute(sql, [current_schema, table_name])
+        else:
+            sql = "SELECT TYPE FROM QSYS2.SYSTABLES WHERE TABLE_SCHEMA=CURRENT_SCHEMA AND TABLE_NAME=?"
+            cursor.execute(sql, [table_name.upper()])
         table_type = cursor.fetchone()[0]
 
         schema = None
