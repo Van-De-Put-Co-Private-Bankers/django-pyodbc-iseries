@@ -48,7 +48,7 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
     sql_drop_pk = "ALTER TABLE %(table)s DROP PRIMARY KEY"
     sql_drop_default = "ALTER TABLE %(table)s ALTER COLUMN %(column)s DROP DEFAULT"
     sql_rename_column = (
-        "ALTER TABLE %(table)s ADD COLUMN %(new_column)s %(new_type)s; UPDATE %(table)s SET %(new_column)s = %(old_column)s; ALTER TABLE %(table)s DROP COLUMN %(old_column)s"
+        "ALTER TABLE %(table)s ADD COLUMN %(new_column)s %(new_type)s; UPDATE %(table)s SET %(new_column)s = %(old_column)s; COMMIT;  ALTER TABLE %(table)s DROP COLUMN %(old_column)s"
     )
 
     @property
@@ -63,6 +63,11 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
         index_name = super()._create_index_name(table_name, column_names, suffix=suffix)
         index_name = index_name.replace('.', '_')
         return index_name
+
+    def execute(self, sql, params=()):
+        statements = str(sql).split(';')
+        for stmt in statements:
+            super().execute(stmt.strip(), params=params)
 
     def alter_field(self, model, old_field, new_field, strict=False):
         alter_field_data_type = False
