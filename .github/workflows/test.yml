@@ -15,4 +15,4 @@ jobs:
           TEST_SYSTEM_USERNAME="${{ secrets.TEST_SYSTEM_USERNAME }}" \
           TEST_SYSTEM_PASSWORD="${{ secrets.TEST_SYSTEM_PASSWORD }}" \
           TEST_SYSTEM_SCHEMA="${{ secrets.TEST_SYSTEM_SCHEMA }}" \
-          docker-compose -f docker-compose-github.yml run --rm tests
+          docker compose -f docker-compose-github.yml run --rm tests
