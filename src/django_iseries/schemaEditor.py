@@ -50,6 +50,10 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
     sql_rename_column = (
         "ALTER TABLE %(table)s ADD COLUMN %(new_column)s %(new_type)s; UPDATE %(table)s SET %(new_column)s = %(old_column)s; COMMIT;  ALTER TABLE %(table)s DROP COLUMN %(old_column)s"
     )
+    sql_create_unique = (
+        "ALTER TABLE %(table)s ADD CONSTRAINT %(name)s "
+        "UNIQUE (%(columns)s)"
+    )
 
     @property
     def sql_create_pk(self):
