@@ -295,6 +295,7 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
                             max = max[0]
                     if not isinstance(old_field, models.IntegerField):
                         sql = self.sql_alter_column_type % {
+                            'table': self.quote_name(model._meta.db_table),
                             'column': self.quote_name(new_field.column),
                             'type': 'Integer'
                         }
@@ -316,6 +317,7 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
                     )
                 else:
                     sql = self.sql_alter_column_type % {
+                        'table': self.quote_name(model._meta.db_table),
                         'column': self.quote_name(new_field.column),
                         'type': new_db_field_type
                     }
@@ -432,6 +434,7 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
             fk_db_field = inc_rel.field.db_parameters(connection=self.connection)
             fk_db_field_type = fk_db_field['type']
             sql = self.sql_alter_column_type % {
+                'table': self.quote_name(model._meta.db_table),
                 'column': self.quote_name(inc_rel.field.column),
                 'type': fk_db_field_type,
             }
