@@ -91,6 +91,10 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
         return self.quote_value(value)
 
     def _create_index_name(self, table_name, column_names, suffix=""):
+        #Ensure table_name is a string
+        if table_name.__class__.__name__ != "str":
+            if '"' not in str(table_name.__name__):
+                table_name = f'"{table_name.__name__}"'
         index_name = super()._create_index_name(table_name, column_names, suffix=suffix)
         index_name = index_name.replace('.', '_')
         return index_name
@@ -582,19 +586,20 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
                 except Error as e:
                     self.execute(del_column)
                     raise e
-            elif unique:
-                field._unique = True
-                constraint_name = self._create_index_name(model, [field.column], suffix="_uniq")
-                sql = self.sql_create_unique % {
-                    'table': self.quote_name(model._meta.db_table), 'name': constraint_name,
-                    'columns': self.quote_name(field.column)
-                }
-                try:
-                    self.execute(sql)
-                    self._reorg_tables()
-                except Error as e:
-                    self.execute(del_column)
-                    raise e
+            #elif unique:
+            # Word reeds op veld niveau toegepast
+            #field._unique = True
+            #constraint_name = self._create_index_name(model, [field.column], suffix="_uniq")
+            #sql = self.sql_create_unique % {
+            #    'table': self.quote_name(model._meta.db_table), 'name': constraint_name,
+            #    'columns': self.quote_name(field.column)
+            #}
+            #try:
+            #    self.execute(sql)
+            #    self._reorg_tables()
+            #except Error as e:
+            #    self.execute(del_column)
+            #    raise e
 
     def alter_db_table(self, model, old_db_table, new_db_table):
         super(DB2SchemaEditor, self).alter_db_table(model, old_db_table, new_db_table)
