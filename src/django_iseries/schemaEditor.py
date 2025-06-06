@@ -104,6 +104,10 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
         for stmt in statements:
             super().execute(stmt.strip(), params=params)
 
+    def quote_name(self, name):
+        return f'"{name.upper()}"'
+        #return self.connection.ops.quote_name(name)
+
     def alter_field(self, model, old_field, new_field, strict=False):
         alter_field_data_type = False
         alter_field_nullable = False
