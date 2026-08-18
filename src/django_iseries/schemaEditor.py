@@ -18,6 +18,7 @@
 
 import copy
 import datetime
+from os import write
 import uuid
 
 try:
@@ -40,16 +41,16 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
     sql_delete_table = "DROP TABLE %(table)s"
     sql_rename_table = "CREATE TABLE %(new_table)s AS (SELECT * FROM %(old_table)s) WITH DATA; DROP TABLE %(old_table)s"
     sql_create_column = "ALTER TABLE %(table)s ADD COLUMN %(column)s %(definition)s"
-    #sql_alter_column_type = "ALTER COLUMN %(column)s SET DATA TYPE %(type)s"
-    sql_alter_column_type = (" ADD COLUMN %(column)s_new %(type)s;"  # The prefix ALTER TABLE is al ready added 
-                             " UPDATE %(table)s SET %(column)s_new = CAST(%(column)s AS %(type)s);"
-                             " COMMIT;"
-                             " ALTER TABLE %(table)s DROP COLUMN %(column)s;"
-                             " ALTER TABLE %(table)s ADD COLUMN %(column)s %(type)s;"
-                             " UPDATE %(table)s SET %(column)s = %(column)s_new;"
-                             " COMMIT;"
-                             " ALTER TABLE %(table)s DROP COLUMN %(column)s_new"
-                            )
+    sql_alter_column_type = "ALTER COLUMN %(column)s SET DATA TYPE %(type)s"
+    #sql_alter_column_type = (" ADD COLUMN %(column)s_new %(type)s;"  # The prefix ALTER TABLE is al ready added 
+    #                         " UPDATE %(table)s SET %(column)s_new = CAST(%(column)s AS %(type)s);"
+    #                         " COMMIT;"
+    #                         " ALTER TABLE %(table)s DROP COLUMN %(column)s;"
+    #                         " ALTER TABLE %(table)s ADD COLUMN %(column)s %(type)s;"
+    #                         " UPDATE %(table)s SET %(column)s = %(column)s_new;"
+    #                         " COMMIT;"
+    #                         " ALTER TABLE %(table)s DROP COLUMN %(column)s_new"
+    #                        )
     #sql_alter_column_null = (" ADD COLUMN %(column)s_new %(type)s;"  # The prefix ALTER TABLE is al ready added 
     #                         " UPDATE %(table)s SET %(column)s_new = CAST(%(column)s AS %(type)s);"
     #                         " COMMIT;"
@@ -99,14 +100,55 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
         index_name = index_name.replace('.', '_')
         return index_name
 
+    def _base_identifier(self, name: str) -> str:
+        """Return the base (non-schema) identifier without quotes."""
+        raw = str(name or "").strip()
+        if "." in raw:
+            raw = raw.split(".")[-1]
+        return raw.replace('"', '').strip()
+
+    def _normalize_system_name(self, value) -> str:
+        """Normalize db_system_name to an uppercase identifier or empty string."""
+        if value is None:
+            return ""
+        normalized = str(value).strip().upper()
+        return normalized
+
     def execute(self, sql, params=()):
+        """Execute SQL statements and fail fast on database errors."""
         statements = str(sql).split(';')
         for stmt in statements:
-            super().execute(stmt.strip(), params=params)
+            stmt = stmt.strip()
+            if not stmt:
+                continue
 
-    def quote_name(self, name):
+            try:
+                super().execute(stmt, params=params)
+
+            except Exception:
+                raise
+
+    def _apply_nullability_change(self, model, field, make_nullable):
+        """Apply nullability change using direct ALTER statements."""
+        sql = self.sql_alter_column_null if make_nullable else self.sql_alter_column_not_null
+        stmt = self.sql_alter_column % {
+            'table': self.quote_name(model._meta.db_table),
+            'changes': sql % {'column': self.quote_name(field.column)}
+        }
+        self.execute(stmt)
+
+
+    def quote_name(self, name: str) -> str:
+        """
+        Zorgt ervoor dat zowel library als objectnaam tussen dubbele quotes staan.
+        Voorbeeld:
+            mylib.mytable -> "MYLIB"."MYTABLE"
+            mytable       -> "MYTABLE"
+        """
+        if "." in name:
+            library, table = name.split(".", 1)
+            return f'"{library.upper()}"."{table.upper()}"'
         return f'"{name.upper()}"'
-        #return self.connection.ops.quote_name(name)
 
     def alter_field(self, model, old_field, new_field, strict=False):
         alter_field_data_type = False
@@ -130,7 +172,6 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
         new_db_field = new_field.db_parameters(connection=self.connection)
         old_db_field_type = old_db_field['type']
         new_db_field_type = new_db_field['type']
-
         if old_field.remote_field is not None and hasattr(old_field.remote_field, 'through'):
             rel_condition = (
                         old_field.remote_field.through and new_field.remote_field.through and old_field.remote_field.through._meta.auto_created and new_field.remote_field.through._meta.auto_created)
@@ -144,7 +185,6 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
                 old_db_field,
                 new_db_field,
             ))
-
         # Need to change datatype which need remaking of field
         if (old_db_field_type != new_db_field_type) and (
                 isinstance(old_field, (models.AutoField, models.TextField)) or isinstance(new_field, models.TextField)):
@@ -159,7 +199,6 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
             new_db_field = new_field.db_parameters(connection=self.connection)
             old_db_field_type = old_db_field['type']
             new_db_field_type = new_db_field['type']
-
         if old_db_field_type != new_db_field_type:
             alter_field_data_type = True
 
@@ -175,7 +214,6 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
             alter_field_check_constraint = True
         if old_field.null != new_field.null:
             alter_field_nullable = True
-
         old_default = DB2SchemaEditor._effective_default(old_field)
         new_default = DB2SchemaEditor._effective_default(new_field)
         if (old_field.default is not None) and old_field.has_default():
@@ -240,16 +278,6 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
                     }
                 )
 
-        # Need to remove Nullability
-        if alter_field_nullable and old_field.null:
-            sql = self.sql_alter_column_not_null % {'column': self.quote_name(old_field.column)}
-            self.execute(
-                self.sql_alter_column % {
-                    'table': self.quote_name(model._meta.db_table),
-                    'changes': sql
-                }
-            )
-
         # Drop all FK constraints, if require we will make it again
         flag = old_field.remote_field
         if flag:
@@ -263,19 +291,21 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
                 )
 
         if alter_field_name or alter_field_data_type:
-
             # Drop all incoming FK constraint, if require we will make it again
             if old_field.primary_key and new_field.primary_key:
                 rebuild_incomming_fk = True
                 for incoming_fks in old_field.model._meta.get_fields():
-                    fk_names = self._constraint_names(incoming_fks.model, [incoming_fks.field.column], foreign_key=True)
-                    for fk_name in fk_names:
-                        self.execute(
-                            self.sql_delete_fk % {
-                                'table': self.quote_name(incoming_fks.model._meta.db_table),
-                                'name': fk_name,
-                            }
-                        )
+                    # Skip BigAutoField --> 'BigAutoField' object has no attribute 'field'
+                    #if incoming_fks.get_internal_type() not in ("BigAutoField", "DateTimeField", "OneToOneField", "TextField", "ForeignKey", "CharField", "Db2ActualCharField", "Db2AutoField", "Db2DecimalField"):
+                    if hasattr(incoming_fks, 'field'):
+                        fk_names = self._constraint_names(incoming_fks.model, [incoming_fks.field.column], foreign_key=True)
+                        for fk_name in fk_names:
+                            self.execute(
+                                self.sql_delete_fk % {
+                                    'table': self.quote_name(incoming_fks.model._meta.db_table),
+                                    'name': fk_name,
+                                }
+                            )
 
             # Defer constraint check
             with self.connection.cursor() as cur:
@@ -384,25 +414,7 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
 
         # Need to change nullability
         if alter_field_nullable:
-            sql = ""
-            if new_field.null:
-                sql = self.sql_alter_column_null % {
-                    #'table': self.quote_name(model._meta.db_table),
-                    #'type': new_db_field_type,
-                    'column': self.quote_name(new_field.column)
-                }
-            else:
-                sql = self.sql_alter_column_not_null % {
-                    #'table': self.quote_name(model._meta.db_table),
-                    #'type': new_db_field_type,
-                    'column': self.quote_name(new_field.column)
-                }
-            self.execute(
-                self.sql_alter_column % {
-                    'table': self.quote_name(model._meta.db_table),
-                    'changes': sql
-                }
-            )
+            self._apply_nullability_change(model, new_field, make_nullable=new_field.null)
 
         # Need to add check constraint
         if alter_field_check_constraint and new_db_field['check']:
@@ -506,16 +518,17 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
                 )
         # Rebuild incoming FK constraints
         if rebuild_incomming_fk:
-            for inc_rel in new_field.model._meta.get_all_related_objects():
-                self.execute(
-                    self.sql_create_fk % {
-                        'table': self.quote_name(inc_rel.model._meta.db_table),
-                        'name': self._create_index_name(inc_rel.model, [inc_rel.field.column], suffix="_fk"),
-                        'column': self.quote_name(inc_rel.field.column),
-                        'to_table': self.quote_name(model._meta.db_table),
-                        'to_column': self.quote_name(new_field.column),
-                    }
-                )
+            if hasattr(new_field.model._meta, "get_all_related_objects"):
+                for inc_rel in new_field.model._meta.get_all_related_objects():
+                    self.execute(
+                        self.sql_create_fk % {
+                            'table': self.quote_name(inc_rel.model._meta.db_table),
+                            'name': self._create_index_name(inc_rel.model, [inc_rel.field.column], suffix="_fk"),
+                            'column': self.quote_name(inc_rel.field.column),
+                            'to_table': self.quote_name(model._meta.db_table),
+                            'to_column': self.quote_name(new_field.column),
+                        }
+                    )
 
     def alterFieldDataTypeByRemaking(self, model, old_field, new_field, strict):
         tmp_new_field = copy.deepcopy(new_field)
@@ -543,6 +556,7 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
         field._unique = False
 
         super(DB2SchemaEditor, self).add_field(model, field)
+        
         if field.remote_field is not None and hasattr(field.remote_field, 'through'):
             rel_condition = field.remote_field.through._meta.auto_created
         else:
@@ -571,14 +585,15 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
                 field.primary_key = True
                 cur = self.connection.cursor()
                 # remove other pk if available
-                for other_pk in cur.connection.primary_keys(True, cur.connection.get_current_schema(),
-                                                            model._meta.db_table):
-                    self.execute(
-                        self.sql_delete_pk % {
-                            'table': self.quote_name(model._meta.db_table),
-                            'name': other_pk['PK_NAME']
-                        }
-                    )
+                if hasattr(cur.connection, "primary_keys"):
+                    for other_pk in cur.connection.primary_keys(True, cur.connection.get_current_schema(),
+                                                                model._meta.db_table):
+                        self.execute(
+                            self.sql_delete_pk % {
+                                'table': self.quote_name(model._meta.db_table),
+                                'name': other_pk['PK_NAME']
+                            }
+                        )
                 sql = self.sql_create_pk % {
                     'table': self.quote_name(model._meta.db_table),
                     'name': self._create_index_name(model, [field.column], suffix="_pk"),
@@ -607,6 +622,142 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
 
     def alter_db_table(self, model, old_db_table, new_db_table):
         super(DB2SchemaEditor, self).alter_db_table(model, old_db_table, new_db_table)
+
+    def remove_field(self, model, field):
+        """
+        Override remove_field to handle DB2 for i ODBC limitations.
+        First removes all constraints/indexes on the field, then tries DROP COLUMN.
+        Falls back to table rebuild if DROP COLUMN still fails.
+        """
+        # Get all fields except the one being removed
+        remaining_fields = [f for f in model._meta.local_fields if f.name != field.name]
+        
+        if not remaining_fields:
+            return super().remove_field(model, field)
+        
+        # First, remove all constraints and indexes on this field
+        self._remove_field_constraints(model, field)
+        
+        # Try direct DROP COLUMN using self.execute() for compatibility
+        sql = f"ALTER TABLE {self.quote_name(model._meta.db_table)} DROP COLUMN {self.quote_name(field.column)}"
+        self.execute(sql)
+        print(f"Successfully dropped column {field.name} from {model._meta.db_table}")
+
+    def _remove_field_constraints(self, model, field):
+        """Remove all indexes, unique constraints, and foreign keys on a field."""
+        table_name = model._meta.db_table
+        column_name = field.column
+        
+        try:
+            with self.connection.cursor() as cur:
+                constraints = self.connection.introspection.get_constraints(cur, table_name)
+            
+            for constr_name, constr_dict in constraints.items():
+                if column_name in constr_dict.get('columns', []):
+                    try:
+                        if constr_dict.get('index'):
+                            self.execute(f"DROP INDEX {self.quote_name(constr_name)}")
+                        elif constr_dict.get('unique') or constr_dict.get('foreign_key'):
+                            self.execute(f"ALTER TABLE {self.quote_name(table_name)} DROP CONSTRAINT {self.quote_name(constr_name)}")
+                    except:
+                        pass
+        except Exception as e:
+            print(f"WARNING: Error removing field constraints: {e}")
+    
+    def _remove_field_via_rebuild(self, model, field, remaining_fields):
+        """
+        Remove a field by rebuilding the table without using DROP COLUMN.
+        This works around ODBC limitations in DB2 for i.
+        Properly preserves column properties like GENERATED BY DEFAULT AS IDENTITY.
+        """
+        old_table = self.quote_name(model._meta.db_table)
+        temp_table = self.quote_name(f"{model._meta.db_table}_tmp_{uuid.uuid4().hex[:8]}")
+        
+        # Get column list for data transfer (exclude the field being removed)
+        select_cols = ', '.join(
+            self.quote_name(f.column) for f in remaining_fields
+        )
+        
+        # Build CREATE TABLE statement with proper column definitions
+        # This preserves GENERATED BY DEFAULT AS IDENTITY and other properties
+        col_defs = []
+        for f in remaining_fields:
+            col_name = self.quote_name(f.column)
+            col_sql, _ = self.column_sql(model, f, include_default=False)
+            # column_sql returns just the type definition, need to prepend column name
+            col_defs.append(f"{col_name} {col_sql}")
+        
+        create_table_def = ', '.join(col_defs)
+        
+        try:
+            # 1. Create new table with proper column definitions (preserves IDENTITY)
+            self.execute(
+                f"CREATE TABLE {temp_table} ({create_table_def})"
+            )
+            print(f"Created temp table {temp_table} with proper column definitions")
+            
+            # 2. Copy data from old table to new table
+            self.execute(
+                f"INSERT INTO {temp_table} ({select_cols}) SELECT {select_cols} FROM {old_table}"
+            )
+            print(f"Copied data from {old_table} to {temp_table}")
+            
+            # 3. Drop original table
+            self.execute(f"DROP TABLE {old_table}")
+            print(f"Dropped original table {old_table}")
+            
+            # 4. Rename temp table back to original
+            self.execute(
+                f"RENAME TABLE {temp_table} TO {old_table}"
+            )
+            print(f"Renamed {temp_table} to {old_table}")
+            
+            # 5. Restore UNIQUE and FOREIGN KEY constraints
+            # (PRIMARY KEY is already preserved via the IDENTITY column definition)
+            try:
+                with self.connection.cursor() as cur:
+                    constraints = self.connection.introspection.get_constraints(cur, model._meta.db_table)
+                
+                for constr_name, constr_dict in constraints.items():
+                    # Skip constraints on the field being removed
+                    if constr_dict.get('columns') and any(col == field.column for col in constr_dict.get('columns', [])):
+                        continue
+                    
+                    # Skip primary key (already handled by IDENTITY)
+                    if constr_dict.get('primary_key'):
+                        print(f"PRIMARY KEY {constr_name} preserved via IDENTITY column")
+                        continue
+                    
+                    # Skip foreign keys (will be handled by later migrations)
+                    if constr_dict.get('foreign_key'):
+                        print(f"Deferring FOREIGN KEY {constr_name} to later migration")
+                        continue
+                    
+                    # Restore UNIQUE constraints
+                    if constr_dict.get('unique'):
+                        try:
+                            cols = ', '.join(self.quote_name(c) for c in constr_dict.get('columns', []))
+                            self.execute(
+                                f"ALTER TABLE {old_table} ADD CONSTRAINT {self.quote_name(constr_name)} UNIQUE ({cols})"
+                            )
+                            print(f"Restored UNIQUE constraint {constr_name}")
+                        except Exception as e:
+                            print(f"WARNING: Could not restore UNIQUE {constr_name}: {e}")
+            except Exception as e:
+                print(f"WARNING: Could not restore constraints: {e}")
+            
+            self._reorg_tables()
+            print(f"Successfully removed {field.name} from {model._meta.db_table} via table rebuild")
+        except Exception as e:
+            print(f"ERROR in _remove_field_via_rebuild: {e}")
+            import traceback
+            traceback.print_exc()
+            # Try to clean up temp table if it exists
+            try:
+                self.execute(f"DROP TABLE {temp_table}")
+            except:
+                pass
+            raise
 
     def _alter_many_to_many(self, model, old_field, new_field, strict):
         deferred_constraints = {
@@ -642,23 +793,24 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
             self._restore_constraints_check(deferred_constraints, rel_old_field, rel_new_field, new_field.rel.through)
 
     def _reorg_tables(self):
-        if getattr(settings, 'DJANGO_ISERIES_SKIP_TABLE_REORG', False):
-            return
-
-        checkReorgSQL = "select tabschema, tabname from sysibmadm.admintabinfo where reorg_pending = 'Y'"
-        res = []
-        reorgSQLs = []
-        with self.connection.cursor() as cursor:
-            cursor.execute(checkReorgSQL)
-            res = cursor.fetchall()
-        if res:
-            for sName, tName in res:
-                reorgSQL = '''CALL SYSPROC.ADMIN_CMD('REORG TABLE "%(sName)s"."%(tName)s"')''' % {
-                    'sName': sName, 'tName': tName
-                }
-                reorgSQLs.append(reorgSQL)
-        for sql in reorgSQLs:
-            self.execute(sql)
+        ...
+        #if getattr(settings, 'DJANGO_ISERIES_SKIP_TABLE_REORG', False):
+        #    return
+#
+        #checkReorgSQL = "select tabschema, tabname from sysibmadm.admintabinfo where reorg_pending = 'Y'"
+        #res = []
+        #reorgSQLs = []
+        #with self.connection.cursor() as cursor:
+        #    cursor.execute(checkReorgSQL)
+        #    res = cursor.fetchall()
+        #if res:
+        #    for sName, tName in res:
+        #        reorgSQL = '''CALL SYSPROC.ADMIN_CMD('REORG TABLE "%(sName)s"."%(tName)s"')''' % {
+        #            'sName': sName, 'tName': tName
+        #        }
+        #        reorgSQLs.append(reorgSQL)
+        #for sql in reorgSQLs:
+        #    self.execute(sql)
 
     def _defer_constraints_check(self, constraints, deferred_constraints, old_field, new_field, model, defer_pk=False,
                                  defer_unique=False, defer_index=False, defer_check=False):
@@ -726,6 +878,20 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
                 'condition': ''
             })
 
+    def column_sql(self, model, field, include_default=False):
+        sql, params = super().column_sql(model, field, include_default=False)
+
+        # Add FOR COLUMN only when db_system_name is meaningful and differs
+        # from the logical column name.
+        system_name = self._normalize_system_name(getattr(field, 'db_system_name', None))
+        if system_name:
+            column_name = self._base_identifier(field.column)
+            if system_name != column_name.upper():
+                # DB2 syntax expects FOR COLUMN before the datatype definition.
+                sql = f"FOR COLUMN {system_name} {sql}"
+        
+        return sql, params
+
     def quote_value(self, value):
         if isinstance(value, (datetime.datetime, datetime.date, datetime.time, str)):
             escape_quotes = lambda s: f'{s}'.replace("'", "''")
@@ -740,3 +906,41 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
             # time intervals will be stored as double number of seconds
             return f"{value / datetime.timedelta(seconds=1)}"
         return str(value)
+
+    def table_sql(self, model):
+        sql, params = super().table_sql(model)
+
+        # Add FOR SYSTEM NAME <system_name> right after the table name when configured.
+        system_name = self._normalize_system_name(getattr(model._meta, 'db_system_name', None))
+        if system_name:
+            table_name = self._base_identifier(model._meta.db_table)
+            if system_name != table_name.upper():
+                open_paren_idx = sql.find('(')
+                if open_paren_idx != -1:
+                    prefix = sql[:open_paren_idx].rstrip()
+                    suffix = sql[open_paren_idx:]
+                    sql = f"{prefix} FOR SYSTEM NAME \"{system_name}\" {suffix}"
+        
+        return sql, params
+    
+    def _add_for_system_name(self, sql: str, model) -> str:
+        """Backward-compatible hook that mirrors table_sql() behavior."""
+        system_name = self._normalize_system_name(getattr(model._meta, 'db_system_name', None))
+        if not system_name:
+            return sql
+
+        table_name = self._base_identifier(model._meta.db_table)
+        if system_name == table_name.upper():
+            return sql
+
+        open_paren_idx = sql.find('(')
+        if open_paren_idx == -1:
+            return sql
+
+        prefix = sql[:open_paren_idx].rstrip()
+        suffix = sql[open_paren_idx:]
+        return f"{prefix} FOR SYSTEM NAME \"{system_name}\" {suffix}"
+    
+    def create_model(self, model):
+        """Override create_model to keep DB2 naming behavior centralized."""
+        super().create_model(model)
