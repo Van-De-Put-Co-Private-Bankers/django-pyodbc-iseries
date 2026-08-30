@@ -21,6 +21,7 @@
 import datetime
 import platform
 import re
+import logging
 
 # For checking django's version
 from functools import partial
@@ -48,9 +49,11 @@ FORMAT_QMARK_REGEX = re.compile(r'(?<!%)%s')
 SQLCODE_0530_REGEX = re.compile(r"^(\[.+] *){4}SQL0530.*")
 SQLCODE_0910_REGEX = re.compile(r"^(\[.+] *){4}SQL0910.*")
 
+logger = logging.getLogger(__name__)
+
 
 class DatabaseWrapper:
-    # Get new database connection for non persistance connection 
+    # Get new database connection for non persistance connection
     def get_new_connection(self, kwargs):
         driver_name = 'iSeries Access ODBC Driver' if platform.system() == 'Windows' else 'IBM i Access ODBC Driver'
         if 'port' in kwargs and 'host' in kwargs:
@@ -98,6 +101,8 @@ class DatabaseWrapper:
 
         dsn = kwargs.pop('dsn', '')
 
+        logger.debug(f'=======> DatabaseWrapper.get_new_connection: db class: {Database}, connection_params: {kwargs}')
+
         connection = Database.connect(dsn, **kwargs)
         if currentschema:
             cursor = DB2CursorWrapper(connection)
@@ -132,7 +137,7 @@ class DatabaseWrapper:
 class DB2CursorWrapper:
     """
     This is the wrapper around IBM_DB_DBI in order to support format parameter style
-    IBM_DB_DBI supports qmark, where as Django support format style, 
+    IBM_DB_DBI supports qmark, where as Django support format style,
     hence this conversion is required.
 
     pyodbc.Cursor cannot be subclassed, so we store it as an attribute
