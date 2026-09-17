@@ -82,6 +82,9 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
         "ALTER TABLE %(table)s ADD CONSTRAINT %(name)s "
         "UNIQUE (%(columns)s)"
     )
+    # DB2 for i keeps COLUMN_TEXT (QSYS2.SYSCOLUMNS) separate from the
+    # LONG_COMMENT set by COMMENT ON COLUMN; this fills the short one too.
+    sql_label_column_text = "LABEL ON COLUMN %(table)s.%(column)s TEXT IS %(text)s"
 
     @property
     def sql_create_pk(self):
@@ -159,6 +162,7 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
         alter_field_check_constraint = False
         alter_field_unique = False
         alter_field_index = False
+        alter_field_comment = False
         rebuild_incomming_fk = False
         alter_incomming_fk_data_type = False
         deferred_constraints = {
@@ -214,6 +218,8 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
             alter_field_check_constraint = True
         if old_field.null != new_field.null:
             alter_field_nullable = True
+        if old_field.db_comment != new_field.db_comment:
+            alter_field_comment = True
         old_default = DB2SchemaEditor._effective_default(old_field)
         new_default = DB2SchemaEditor._effective_default(new_field)
         if (old_field.default is not None) and old_field.has_default():
@@ -416,6 +422,14 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
         if alter_field_nullable:
             self._apply_nullability_change(model, new_field, make_nullable=new_field.null)
 
+        # Need to change comment
+        if alter_field_comment and self.connection.features.supports_comments:
+            self.execute(
+                *self._alter_column_comment_sql(
+                    model, new_field, new_db_field_type, new_field.db_comment
+                )
+            )
+
         # Need to add check constraint
         if alter_field_check_constraint and new_db_field['check']:
             self.execute(
@@ -555,7 +569,18 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
         unique = field.unique
         field._unique = False
 
+        # DB2 for i can add a NOT NULL column and backfill existing rows in a
+        # single DDL statement via "WITH DEFAULT", instead of ADD COLUMN
+        # followed by a separate ALTER COLUMN SET NOT NULL. The follow-up
+        # ALTER on a column that was just added can be rejected by DB2 for i
+        # (HY008 Operation cancelled), so avoid it whenever possible.
+        inline_not_null = notnull and not p_key and not field.has_default()
+        self._inline_not_null_field = field if inline_not_null else None
+
         super(DB2SchemaEditor, self).add_field(model, field)
+        self._inline_not_null_field = None
+        if inline_not_null:
+            field.null = False
         
         if field.remote_field is not None and hasattr(field.remote_field, 'through'):
             rel_condition = field.remote_field.through._meta.auto_created
@@ -571,7 +596,7 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
             del_column = self.sql_delete_column % {
                 'table': self.quote_name(model._meta.db_table), 'column': self.quote_name(field.column)
             }
-            if notnull:
+            if notnull and not inline_not_null:
                 field.null = False
                 sql = self.sql_alter_column_not_null % {'column': self.quote_name(field.column)}
                 sql = self.sql_alter_column % {'table': self.quote_name(model._meta.db_table), 'changes': sql}
@@ -793,24 +818,20 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
             self._restore_constraints_check(deferred_constraints, rel_old_field, rel_new_field, new_field.rel.through)
 
     def _reorg_tables(self):
-        ...
-        #if getattr(settings, 'DJANGO_ISERIES_SKIP_TABLE_REORG', False):
-        #    return
-#
-        #checkReorgSQL = "select tabschema, tabname from sysibmadm.admintabinfo where reorg_pending = 'Y'"
-        #res = []
-        #reorgSQLs = []
-        #with self.connection.cursor() as cursor:
-        #    cursor.execute(checkReorgSQL)
-        #    res = cursor.fetchall()
-        #if res:
-        #    for sName, tName in res:
-        #        reorgSQL = '''CALL SYSPROC.ADMIN_CMD('REORG TABLE "%(sName)s"."%(tName)s"')''' % {
-        #            'sName': sName, 'tName': tName
-        #        }
-        #        reorgSQLs.append(reorgSQL)
-        #for sql in reorgSQLs:
-        #    self.execute(sql)
+        # Pending reorgs block subsequent ALTER TABLE statements on the same table,
+        # so this must run for real after every ADD/ALTER COLUMN.
+        if getattr(settings, 'DJANGO_ISERIES_SKIP_TABLE_REORG', False):
+            return
+
+        check_reorg_sql = "select tabschema, tabname from sysibmadm.admintabinfo where reorg_pending = 'Y'"
+        with self.connection.cursor() as cursor:
+            cursor.execute(check_reorg_sql)
+            pending = cursor.fetchall()
+        for schema, table in pending:
+            reorg_sql = '''CALL SYSPROC.ADMIN_CMD('REORG TABLE "%(schema)s"."%(table)s"')''' % {
+                'schema': schema, 'table': table
+            }
+            self.execute(reorg_sql)
 
     def _defer_constraints_check(self, constraints, deferred_constraints, old_field, new_field, model, defer_pk=False,
                                  defer_unique=False, defer_index=False, defer_check=False):
@@ -889,7 +910,11 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
             if system_name != column_name.upper():
                 # DB2 syntax expects FOR COLUMN before the datatype definition.
                 sql = f"FOR COLUMN {system_name} {sql}"
-        
+
+        # See add_field(): fold NOT NULL into the ADD COLUMN statement itself.
+        if getattr(self, '_inline_not_null_field', None) is field:
+            sql += " NOT NULL WITH DEFAULT"
+
         return sql, params
 
     def quote_value(self, value):
@@ -906,6 +931,21 @@ class DB2SchemaEditor(BaseDatabaseSchemaEditor):
             # time intervals will be stored as double number of seconds
             return f"{value / datetime.timedelta(seconds=1)}"
         return str(value)
+
+    def _alter_column_comment_sql(self, model, new_field, new_type, new_db_comment):
+        comment_sql, params = super()._alter_column_comment_sql(model, new_field, new_type, new_db_comment)
+
+        # Mirror the (possibly truncated) comment into COLUMN_TEXT via LABEL ON.
+        text = new_db_comment or ""
+        if len(text) > 50:
+            text = text[:47] + "..."
+        label_sql = self.sql_label_column_text % {
+            'table': self.quote_name(model._meta.db_table),
+            'column': self.quote_name(new_field.column),
+            'text': self.quote_value(text),
+        }
+        return f"{comment_sql}; {label_sql}", params
+
 
     def table_sql(self, model):
         sql, params = super().table_sql(model)

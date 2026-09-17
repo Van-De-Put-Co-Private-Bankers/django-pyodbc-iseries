@@ -103,6 +103,10 @@ class DatabaseFeatures(BaseDatabaseFeatures):
     supports_over_clause = True
     supports_boolean_expr_in_select_clause = False
 
+    # DB2 for i supports COMMENT ON TABLE/COLUMN, but not inline column comments.
+    supports_comments = True
+    supports_comments_inline = False
+    
     create_test_procedure_without_params_sql = None
     create_test_procedure_with_int_param_sql = None
 
